@@ -26,7 +26,7 @@ Additional gretl packages:
 
 Additional scripts:
 
-- tvar_kf.inp : it include routinres to perform the
+- tvar_kf.inp:  includes routinres to perform the
 Kalman filter (KF) estimation;
 
 - tvc_mod.inp: a fork of the TVC functions. All visual and
