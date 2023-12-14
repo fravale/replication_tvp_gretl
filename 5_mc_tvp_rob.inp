@@ -1,0 +1,202 @@
+clear
+
+set verbose off
+include tvar_kf.inp
+include ketvals.gfn
+include tvc_mod.inp
+include FLS.gfn
+set workdir "/home/francesco/Desktop/Dropbox/officina/gretl_conf_2023/tv_lin_mod_gretl_dev/codes"
+
+# Estimator
+#matrix KK = {1}
+#scalar numk = nelem(KK)
+
+matrix TT = {64,128} # Sample size
+scalar numt = nelem(TT)
+
+scalar maxnd = max(TT)
+
+NIT = 1000
+n = 2 # # of Covariates
+
+## Parameters for X
+
+sigma = 0.5
+RHO = {0} #,0.5}
+scalar numr = nelem(RHO)
+
+
+
+
+############### MONTECARLO ##############
+set seed 75854
+nulldata maxnd --preserve
+setobs 1 1 --special-time-series
+
+### Simulation design ###########################
+
+loop rr = 1 .. numr
+    rho = RHO[rr]
+
+    R = mshape(rho, n, n)
+    R[diag] = 1
+
+    loop t = 1 .. numt
+        T = TT[t]
+        smpl 1 T
+
+        print T
+        flush
+
+        MED1 = zeros(NIT,6)
+        AMED1 = zeros(NIT,6)
+
+        MED2 = zeros(NIT,6)
+        AMED2 = zeros(NIT,6)
+
+        time_kf = zeros(NIT,1)
+        time_kb = zeros(NIT,1)
+        time_kba = zeros(NIT,1)
+        time_vc = zeros(NIT,1)
+        time_fls = zeros(NIT,1)
+        time_fls_n = zeros(NIT,1)
+
+
+        loop nit = 1 .. NIT
+
+
+            y = normal() * sigma
+
+            s = 0.05 * muniform(n,1) * 2
+
+            mX = mnormal($nobs, n) * cholesky(R)'
+            list X = mat2list(mX, "x")
+            #list B
+            loop i = 1 .. n
+                #    B$i = cum(normal() * s[i])
+                b$i = cos(time * i / 32) + (2 + i*2) * (time > $nobs / (i+1))
+                #list B += b$i
+                y += x$i * b$i
+            endloop
+
+            ## FLS
+
+            set stopwatch
+            bun_fls0 = FLS(y,X, _(mu=100))
+            time_fls[nit] = $stopwatch
+            list FLS0 = mat2list(bun_fls0.coeff, "FLS_")
+
+            set stopwatch
+            bun_fls1 = FLS(y,X, _(mu=100, metric=1))
+            time_fls_n[nit] = $stopwatch
+            list FLS1 = mat2list(bun_fls1.coeff, "FLS_N_")
+
+
+            ## RES
+            MED1[nit,5] = median(FLS_1 - b1)
+            AMED1[nit,5] = median(abs(FLS_1 - b1))
+            MED2[nit,5] = median(FLS_2 - b2)
+            AMED2[nit,5] = median(abs(FLS_2 - b2))
+
+            MED1[nit,6] = median(FLS_N_1 - b1)
+            AMED1[nit,6] = median(abs(FLS_N_1 - b1))
+            MED2[nit,6] = median(FLS_N_2 - b2)
+            AMED2[nit,6] = median(abs(FLS_N_2 - b2))
+
+
+            ## KALMAN FILTER
+            type = 1
+            has_corr = 1
+            set stopwatch
+            catch kmod = tvols_kf(y, X, type, has_corr)
+            if $error
+                time_kf[nit] = 0
+            else
+                time_kf[nit] = $stopwatch
+
+                BKF = mat2list(kmod.state[, kmod.sel], "KF_")
+                varsel = mreverse(1 + n*(n+1)/2 - cum(seq(1,n)'))
+                mat2list(sqrt(kmod.stvar[, varsel]), "kf_se")
+                vnames = varnames(X)
+
+                ## RES
+                MED1[nit,1] = median(KF_1 - b1)
+                AMED1[nit,1] = median(abs(KF_1 - b1))
+                MED2[nit,1] = median(KF_2 - b2)
+                AMED2[nit,1] = median(abs(KF_2 - b2))
+            endif
+
+            ## KETVALS
+            set stopwatch
+            bundle mod = tv_OLS(y, X,0.66,0)
+            time_kb[nit] = $stopwatch
+            loop i = 1 .. n
+                kb_$i = coeff_save(mod, i)
+            endloop
+
+            ## RES
+            MED1[nit,2] = median(kb_1 - b1)
+            AMED1[nit,2] = median(abs(kb_1 - b1))
+            MED2[nit,2] = median(kb_2 - b2)
+            AMED2[nit,2] = median(abs(kb_2 - b2))
+
+            ## KETVALS - AUTOBAND
+            set stopwatch
+            bundle moda = tv_OLS(y, X, ,0)
+            time_kba[nit] = $stopwatch
+            loop i = 1 .. n
+                kba_$i = coeff_save(moda, i)
+            endloop
+
+            ## RES
+            MED1[nit,3] = median(kba_1 - b1)
+            AMED1[nit,3] = median(abs(kba_1 - b1))
+            MED2[nit,3] = median(kba_2 - b2)
+            AMED2[nit,3] = median(abs(kba_2 - b2))
+
+            ## Schlicht -VC
+            list Z = y X
+            set stopwatch
+            catch list VC = TVC(Z)
+            if $error
+                time_vc[nit] = 0
+                MED1[nit,4] = 0
+                AMED1[nit,4] = 0
+                MED2[nit,4] = 0
+                AMED2[nit,4] = 0
+            else
+                time_vc[nit] = $stopwatch
+
+
+                ## RES
+                MED1[nit,4] = median(coeff_x1 - b1)
+                AMED1[nit,4] = median(abs(coeff_x1 - b1))
+                MED2[nit,4] = median(coeff_x2 - b2)
+                AMED2[nit,4] = median(abs(coeff_x2 - b2))
+            endif
+        endloop
+
+
+
+        bundle Bres = null
+        strings Bres.order = defarray("kf","kb","kba","tvc","fls","fls_n")
+        matrices Bres.simx1 = defarray(MED1, AMED1)
+        matrices Bres.simx2 = defarray(MED2, AMED2)
+        matrices Bres.times = defarray(time_kf, time_kb, time_kba, time_vc, time_fls, time_fls_n)
+        bun_name = sprintf("rob_res_rho%g_T%g", rho, T)
+        #bwrite(Bres,bun_name)
+
+        scalar fails = sum(res.times[4].=0)
+
+        TAB = meanc(Bres.simx1[1])' ~ meanc(Bres.simx1[2])' ~ meanc(Bres.simx2[1])' ~ meanc(Bres.simx2[2])' ~ meanc(flatten(Bres.times))'
+        TAB[4,] = TAB[4,]*(1000/(1000-fails))
+        print bun_name
+        eval TAB
+
+    endloop
+
+
+endloop
+
+
+

@@ -1,0 +1,114 @@
+clear
+set verbose off
+include tvar_kf.inp
+include ketvals.gfn
+include tvc_mod.inp
+# include fls.inp
+include FLS.gfn
+# set workdir "/home/francesco/Desktop/Dropbox/officina/gretl_conf_2023/tv_lin_mod_gretl_dev/codes"
+
+set seed 786523
+nulldata 128
+setobs 1 1 --special-time-series
+
+JUMPS = 0
+TIME_CONST = 1
+
+### Simulation design ###########################
+
+## Covariates
+n = 2
+
+sigma = 0.7
+rho = JUMPS ? 0.0 : 0.5
+R = mshape(rho, n, n)
+R[diag] = 1
+y = normal() * sigma
+
+s = 0.05 * muniform(n,1) * 2
+
+mX = mnormal($nobs, n) * cholesky(R)'
+list X = mat2list(mX, "x")
+list B
+loop i = 1 .. n
+    if JUMPS
+        B$i = cos(time * i / 32) + (2 + i*2) * (time > $nobs / (i+1))
+    elif TIME_CONST
+        B$i = const/$i
+    else
+        B$i = cum(normal() * s[i])
+    endif
+
+    gname = sprintf("β%d", i)
+    setinfo B$i --graph-name="@gname"
+    list B += B$i
+    y += x$i * B$i
+endloop
+
+## FLS
+bun_fls0 = FLS(y,X, _(mu=100))
+list FLS0 = mat2list(bun_fls0.coeff, "FLS_")
+
+bun_fls1 = FLS(y,X, _(mu=100, metric=1))
+list FLS1 = mat2list(bun_fls1.coeff, "FLSN_")
+
+## KALMAN FILTER
+type = 1
+has_corr = 1
+set stopwatch
+kmod = tvols_kf(y, X, type, has_corr)
+
+KF = mat2list(kmod.state[, kmod.sel], "KF_")
+varsel = mreverse(1 + n*(n+1)/2 - cum(seq(1,n)'))
+mat2list(sqrt(kmod.stvar[, varsel]), "kf_se")
+vnames = varnames(X)
+
+
+
+## KETVALS
+set stopwatch
+bundle mod = tv_OLS(y, X, 0.5)
+list KB
+loop i = 1 .. n
+    KB_$i = coeff_save(mod, i)
+    KB += KB_$i
+endloop
+
+
+## KETVALS - AUTOBAND
+set stopwatch
+bundle moda = tv_OLS(y, X)
+
+list KBA
+loop i = 1 .. n
+    KBA_$i = coeff_save(moda, i)
+    KBA += KBA_$i
+endloop
+
+
+
+## Schlicht -VC
+list Z = y X
+set stopwatch
+catch list VC = TVC(Z)
+rename coeff_x1 VC_1
+rename coeff_x2 VC_2
+
+## Print plots
+
+loop i = 1 .. n
+    list PLT = B[i] KF[i] KB[i] KBA[i] VC_$i FLS0[i] FLS1[i]
+    plot PLT
+        options time-series with-lines single-yaxis
+        literal set linetype 1 lc rgb "#000000" lw 2
+        literal set linetype 2 lw 1.5
+        literal set linetype 3 lw 1.5
+        literal set linetype 4 lw 1.5
+        literal set linetype 5 lw 1.5
+        literal set linetype 6 lw 1.5
+        literal set linetype 7 lw 1.5
+        literal set key outside
+    end plot --output=display
+endloop
+
+

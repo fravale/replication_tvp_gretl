@@ -1,0 +1,268 @@
+include ketvals.gfn
+
+function matrix tvar_beta_ini(series y, list X)
+    smpl y X --no-missing
+    my = {y}
+    mX = {X}
+    T = rows(mX)
+    k = cols(mX)
+    matrix ret = zeros(T, k)
+    bsize = xmax(ceil(3 * sqrt(T)), k)
+    nblocks = ceil(T/bsize)
+
+    fin = 0
+    loop i = 1 .. nblocks-1
+        ini = fin + 1
+        fin += bsize
+        b = mols(my[ini:fin], mX[ini:fin,])
+        ret[ini:fin, ] = mshape(b, k, bsize)'
+    endloop
+    ini = fin+1
+    fin = T
+    span = fin-ini+1
+    if span > k
+        b = mols(my[ini:fin], mX[ini:fin,])
+    endif
+
+    ret[ini:fin, ] = mshape(b, k, span)'
+    return ret
+end function
+
+function void at_each_step(bundle *b)
+    xt = b.mX[b.t,]
+    type = b.modeltype
+    if type == 1
+        b.obsymat = xt'
+    elif type == 2
+        b.obsymat = vec((xt | 0)')
+    endif
+end function
+
+function bundle set_up_ssmod(series depvar, list reg,
+                             scalar modeltype)
+
+    scalar n = nelem(reg)
+    ols depvar reg --simple --quiet
+
+    /* bundle setup */
+    if modeltype == 1
+        # parameters are a rw (local level model)
+        matrix Z = ones(n, 1)
+        matrix Q = I(n)
+        matrix T = I(n)
+    elif modeltype == 2
+        # parameters are I(2) (local linear trend model)
+        matrix Z = ones(n,1) | zeros(n,1)
+        matrix Q = I(2 * n)
+        matrix T = {1, 1; 0, 1} ** I(n)
+    endif
+
+    matrix sel = seq(1, n)
+
+    bundle SSmod = ksetup(depvar, Z, T, 0.01 * Q)
+    matrix SSmod.mX = {reg}
+    matrix SSmod.sel = sel
+    matrix SSmod.modeltype = modeltype
+
+    SSmod.obsvar = 1
+    SSmod.timevar_call = "at_each_step"
+    SSmod.diffuse = 2
+
+    return SSmod
+end function
+
+function scalar force_pd(matrix *S)
+    matrix V = {}
+    l = eigensym(S, &V)
+    if minc(l) > 1.0e-7
+        ret = 0
+    else
+        l = l .> 1.0e-7 ? l : 1.0e-7
+        S = qform(V, l)
+        ret = 1
+    endif
+    return ret
+end function
+
+function matrix llt_mminit(const matrix b,
+                           scalar has_corr)
+
+    scalar k = cols(b)
+    matrix ddb = diff(diff(b))
+    V = mcov(mlag(ddb, {0,1}))
+    Shat = -0.5 * (V[1:k, k+1:end] + V[k+1:end, 1:k])
+    force_pd(&Shat)
+    if has_corr
+        ret = cholesky(Shat)
+    else
+        ret = sqrt(diag(Shat))
+    endif
+    V = V[1:k, 1:k]
+    dg = diag(V - 2 * Shat)
+    somhat = dg .> 0 ? sqrt(dg) : 1.0e-4
+    ret = somhat ~ ret
+    return ret
+end function
+
+function matrix stvar_param(matrix bl, scalar type, scalar has_corr)
+
+    SMALL = 1.0e-6
+    if type == 1
+        matrix db = diff(bl)
+        matrix V = mcov(db)
+        if has_corr
+            K = psdroot(V)
+            Kd = K[diag]
+            K[diag] = Kd.>SMALL ? Kd : SMALL
+            ret = K'
+        else
+            ret = sqrt(diag(V))
+        endif
+    elif type == 2
+        ret = llt_mminit(bl, has_corr)
+    endif
+
+    return ret
+end function
+
+function matrix do_statevar(matrix bl, scalar type, scalar has_corr)
+
+    vpar = stvar_param(bl, type, has_corr)
+
+    if type == 1
+        if has_corr
+            ret = vpar * vpar'
+        else
+            ret = I(cols(bl))
+            ret[diag] = vpar.^2
+        endif
+    elif type == 2
+        vomega = I(cols(bl))
+        vomega[diag] = vpar[,1].^2
+        if has_corr
+            veta = vpar[,2:] * vpar[,2:]'
+        else
+            veta = I(cols(bl))
+            veta[diag] = vpar[,2].^2
+        endif
+
+        ret = diagcat(veta, vomega)
+    endif
+
+    return ret
+end function
+
+function void init_via_EM(bundle *mod, series y, list X)
+    # parameter initialisation via EM
+    scalar n = nelem(X)
+    scalar type = mod.modeltype
+
+    bhat = tvar_beta_ini(y, X)
+    if type == 2
+        lhat = mnormal($nobs, n) .* 0.01
+    endif
+
+    #    print bhat
+    #    print mod.mX
+
+    sel = mod.sel
+
+    l0 = -$huge
+    dl = $huge
+    iter = 0
+    has_corr = 1
+
+    loop while dl > 1.0e-7 && iter < 10
+        iter++
+        series m = sumr(bhat .* mod.mX)
+        series e = y - m
+        s_obs = sd(e)
+        mod.obsvar = s_obs^2
+        mod.statevar = do_statevar(bhat, type, has_corr)
+        
+        err = ksmooth(&mod)
+        bhat = mod.state[,sel]
+        if type == 2
+            lhat = mod.state[,sel+1]
+        endif
+
+        l1 = mod.lnl
+        dl = l1 - l0
+        printf "%12.4f\n", l1
+        l0 = l1
+    endloop
+end function
+
+function matrix make_stvar(const matrix param, scalar n,
+                           scalar type, scalar has_corr)
+    if type == 1
+        if has_corr
+            tmp = lower(unvech(param))
+            ret = tmp*tmp'
+        else
+            ret = I(n)
+            ret[diag] = param.^2
+        endif
+    elif type == 2
+        vomega = I(n)
+        if has_corr
+            m = n*(n+1)/2
+            tmp = lower(unvech(param[1:m]))
+            veta = tmp*tmp'
+            vomega[diag] = param[m+1:].^2
+        else
+            veta = I(n)
+            veta[diag] = param[1:n].^2
+            vomega[diag] = param[n+1:].^2
+        endif
+        ret = diagcat(veta, vomega)
+    endif
+    flush
+    return ret
+end function
+
+
+function bundle tvols_kf(series y, list X, scalar type[1], scalar has_corr[1])
+    /* bundle setup */
+    bundle SSmod = set_up_ssmod(y, X, type)
+    sel = SSmod.sel
+    
+    if 0
+        init_via_EM(&SSmod, y, X)
+    else
+        kvmod = tv_OLS(y, X, 0.5, 0)
+        s_obs = sd(kvmod.uhat)
+        SSmod.obsvar = s_obs^2
+        SSmod.statevar = do_statevar(kvmod.coeff, type, has_corr)
+    endif
+    
+    # INI = mat2list(SSmod.state[, sel], "ini_beta")
+
+    scale = 1
+    sel = SSmod.sel
+    scalar su = scale * sqrt(SSmod.obsvar)
+    scalar n = nelem(X)
+
+    V = SSmod.statevar[1:n,1:n]
+    if has_corr
+        matrix param = scale * vech(cholesky(V)')
+    else
+        matrix param = scale * sqrt(diag(V))
+    endif
+
+    if type == 2
+        V = diag(SSmod.statevar)[n+1:]
+        matrix param = param | sqrt(V)
+    endif
+
+    set lbfgs on
+    mle loglik = ERR ? NA : SSmod.llt
+        SSmod.obsvar = (su/scale)^2
+        SSmod.statevar = make_stvar(param, n, type,has_corr)
+        ERR = kfilter(&SSmod)
+        params su param
+    end mle --quiet
+
+    ksmooth(&SSmod)
+    return SSmod
+end function

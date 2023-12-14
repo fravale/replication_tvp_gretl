@@ -1,0 +1,139 @@
+# Replication: cpu time
+
+set verbose off
+include tvar_kf.inp
+include ketvals.gfn
+include tvc_mod.inp
+include FLS.gfn
+
+# Estimator
+matrix KK = {2,4,8}
+scalar numk = nelem(KK)
+
+matrix TT = {128,256,512} # Sample size
+scalar numt = nelem(TT)
+
+scalar maxnd = max(TT)
+
+
+############### MONTECARLO ##############
+set seed 759#1722
+nulldata maxnd --preserve
+setobs 1 1 --special-time-series
+
+### Simulation design ###########################
+
+time_kf = zeros(numk,numt)
+time_kb = zeros(numk,numt)
+time_kba = zeros(numk,numt)
+time_vc = zeros(numk,numt)
+time_fls = zeros(numk,numt)
+time_fls_n = zeros(numk,numt)
+
+
+loop k = 1 .. numk
+    n = KK[k]
+    loop t = 1 .. numt
+        T = TT[t]
+        smpl 1 T
+
+        #         sigma = 0.7
+        #         rho = 0
+        #         R = mshape(rho, n, n)
+        #         R[diag] = 1
+        #         y = normal() * sigma
+        #
+        #         s = 0.05 * muniform(n,1) * 2
+        #
+        #         mX = mnormal($nobs, n) * cholesky(R)'
+        #         list X = mat2list(mX, "x")
+        #         list B = null
+        #         loop i = 1 .. n
+        #             b$i = cum(normal() * s[i])
+        #             list B += b$i
+        #             y += x$i * b$i
+        #         endloop
+
+        sigma = 0.7
+        y = normal() * sigma
+        s = 0.05 * muniform(n,1) * 2
+
+        list X = null
+        loop i = 1 .. n
+            x$i = normal()
+            X += x$i
+            b$i = cum(normal() * s[i])
+            y += x$i * b$i
+        endloop
+
+
+
+        ## KALMAN FILTER
+        type = 1
+        has_corr = 1
+        set stopwatch
+        kmod = tvols_kf(y, X, type, has_corr)
+        time_kf[k,t] = $stopwatch
+
+        ## KETVALS
+        set stopwatch
+        bundle mod = tv_OLS(y, X,0.66) #, 0.66,,1)
+        time_kb[k,t] = $stopwatch
+
+        ## KETVALS_A
+        set stopwatch
+        bundle moda = tv_OLS(y, X)
+        time_kba[k,t] = $stopwatch
+
+
+        ## FLS
+        set stopwatch
+        bun_fls0 = FLS(y,X, _(mu=100))
+        time_fls[k,t] = $stopwatch
+
+        set stopwatch
+        bun_fls1 = FLS(y,X, _(mu=100, metric=1))
+        time_fls_n[k,t] = $stopwatch
+
+        print time_kf
+        print time_kb
+        print time_kba
+        print time_vc
+        print time_fls
+        print time_fls_n
+
+        ## Schlicht -VC
+        #if !(n==8 && T==512)
+        list Z = y X
+        set stopwatch
+        catch list VC = TVC(Z)
+        if $error
+            time_vc[k,t] = 0
+        else
+            time_vc[k,t] = $stopwatch
+        endif
+        # endif
+
+
+
+
+
+        smpl full
+
+
+
+    endloop
+endloop
+
+        print time_kf
+        print time_kb
+        print time_kba
+        print time_vc
+        print time_fls
+        print time_fls_n
+
+flush
+
+matrices rest =  defarray(time_kf, time_kb, time_kba, time_vc, time_fls, time_fls_n)
+bundle rett = defbundle("rest",rest)
+bwrite(rett,"times_haavelmo.xml")

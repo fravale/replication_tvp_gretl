@@ -1,0 +1,151 @@
+### Replication: Okun application
+
+clear
+set verbose off
+set seed 393298
+include tvar_kf.inp
+include ketvals.gfn
+include TVC.gfn
+include FLS.gfn
+set bfgs_verbskip 10
+
+# set workdir "/home/francesco/Desktop/Dropbox/officina/gretl_conf_2023/tv_lin_mod_gretl_dev/codes"
+
+open fedstl.bin
+data gdpc1
+data unrate
+
+
+series ogap = 100 * hpfilt(log(gdpc1))
+diff unrate ogap
+
+series period = 1 + (obs > 1973:4) + (obs > 1999:4)
+gnuplot unrate ogap --time-series --with-lines --output=display
+
+### compute the 3 OLS estimates by subperiod
+loop i = 1 .. 3
+    smpl period==i --restrict --replace
+    ols unrate const ogap --quiet
+    fit$i = $yhat
+endloop
+smpl full
+
+gnuplot unrate ogap period {set key top right;} --dummy --output="splot1.plt"
+gnuplot unrate fit1 fit2 fit3 ogap --with-lines=fit1,fit2,fit3 --output="splot2.plt"
+
+# the two output files must be merged and edited by hand to produce
+# the gnuplot script for "okun_scatterplot.pdf"
+
+list X = const unrate(-1) ogap(-1) d_ogap(0 to -1)
+series y = d_unrate
+smpl 1948:2 2023:1 
+
+ols d_unrate X
+modtest -a
+n = nelem(X)
+
+list LRM = null
+
+## KALMAN FILTER
+type = 1
+has_corr = 1
+set stopwatch
+kmod = tvols_kf(y, X, type, has_corr)
+time_kf = $stopwatch
+
+BKF = mat2list(kmod.state[, kmod.sel], "KF_")
+varsel = mreverse(1 + n*(n+1)/2 - cum(seq(1,n)'))
+mat2list(sqrt(kmod.stvar[, varsel]), "kf_se")
+vnames = varnames(X)
+
+LRM_KF = -KF_3/KF_2
+LRM += LRM_KF
+
+
+## KETVALS-AUTO
+## Ketvals
+set stopwatch
+bundle mod = tv_OLS(y, X)
+time_kb = $stopwatch
+
+loop i = 1 .. n
+    series kb_se$i = NA
+    KBA_$i = coeff_save(mod, i, &kb_se$i)
+endloop
+
+LRM_KBA = -KBA_3/KBA_2
+LRM += LRM_KBA
+
+
+## KETVALS-FIXED-BANDWIDTH
+## Ketvals
+set stopwatch
+bundle mod = tv_OLS(y, X, 0.5)
+time_kb = $stopwatch
+
+loop i = 1 .. n
+    series kb_se$i = NA
+    KB_$i = coeff_save(mod, i, &kb_se$i)
+endloop
+
+LRM_KB = -KB_3/KB_2
+LRM += LRM_KB
+
+
+## Schlicht -VC
+
+list Z = y X
+set stopwatch
+list VCl = TVC(Z)
+time_vc = $stopwatch
+
+LRM_VC = -coeff_ogap_1/coeff_unrate_1
+LRM += LRM_VC
+
+
+
+
+## FLS
+# bun_fls = fls(y,X,50)
+# list HH = mat2list(bun_fls.coeff, "FLS_")
+
+bun_fls0 = FLS(y,X, _(mu=50))
+list FLS0 = mat2list(bun_fls0.coeff, "FLS_")
+LRM_FLS = -FLS_3/FLS_2
+LRM += LRM_FLS
+
+
+bun_fls1 = FLS(y,X, _(mu=50, metric=1))
+list FLS1 = mat2list(bun_fls1.coeff, "FLSN_")
+
+LRM_FLSN = -FLSN_3/FLSN_2
+LRM += LRM_FLSN
+
+list LRM1 = LRM_KF LRM_VC LRM_FLS
+list LRM2 = LRM_FLSN LRM_KB LRM_KBA
+
+plot LRM1 
+    options single-yaxis with-lines time-series 
+    literal set yrange [-5:3]
+end plot --output=display
+
+plot LRM2 
+    options single-yaxis with-lines time-series 
+    literal set yrange [-5:3]
+end plot --output=display
+
+tvcnames = varnames(X)
+loop i=1..5
+    tmp = sprintf("coeff_%s",tvcnames[i])
+    print tmp
+    list CC$i = KF_$i KB_$i KBA_$i @tmp FLS_$i FLSN_$i
+    matrix TMP = {CC$i}
+    cnameset(TMP,defarray("KF","KB","KBA","VC","FLS","FLSN"))
+    list CC = mat2list(TMP)
+    pltname = sprintf("tv_plot_%s.pdf",tvcnames[$i])
+    plot CC 
+        options single-yaxis with-lines time-series 
+        literal set key outside
+    end plot --output=@pltname 
+endloop
+

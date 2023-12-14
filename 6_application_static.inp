@@ -1,0 +1,96 @@
+### Replication: Okun application
+
+clear
+set verbose off
+set seed 393298
+include tvar_kf.inp
+include ketvals.gfn
+include TVC.gfn
+include FLS.gfn
+set bfgs_verbskip 10
+
+# set workdir "/home/francesco/Desktop/Dropbox/officina/gretl_conf_2023/tv_lin_mod_gretl_dev/codes"
+
+open fedstl.bin
+data gdpc1
+data unrate
+
+series ogap = 100 * hpfilt(log(gdpc1))
+list X = const ogap
+series y = unrate
+smpl 1948:2 2023:1
+
+ols unrate X
+modtest 8 -a
+n = nelem(X)
+
+list OGAP_COEF = empty
+
+## KALMAN FILTER
+type = 1
+has_corr = 1
+set stopwatch
+kmod = tvols_kf(y, X, type, has_corr)
+time_kf = $stopwatch
+
+BKF = mat2list(kmod.state[, kmod.sel], "KF_")
+#varsel = mreverse(1 + n*(n+1)/2 - cum(seq(1,n)'))
+#mat2list(sqrt(kmod.stvar[, varsel]), "kf_se")
+#vnames = varnames(X)
+
+OGAP_COEF += KF_2
+
+## KETVALS-AUTO
+## Ketvals
+set stopwatch
+bundle mod = tv_OLS(y, X)
+time_kb = $stopwatch
+
+loop i = 1 .. n
+    series kb_se$i = NA
+    KBA_$i = coeff_save(mod, i, &kb_se$i)
+endloop
+
+OGAP_COEF += KBA_2
+
+## KETVALS-FIXED-BANDWIDTH
+## Ketvals
+set stopwatch
+bundle mod = tv_OLS(y, X, 0.333)
+time_kb = $stopwatch
+
+loop i = 1 .. n
+    series kb_se$i = NA
+    KB_$i = coeff_save(mod, i, &kb_se$i)
+endloop
+
+OGAP_COEF += KB_2
+
+## Schlicht -VC
+
+list Z = y X
+set stopwatch
+list VCl = TVC(Z,,0)
+time_vc = $stopwatch
+
+rename coeff_ogap VC_2
+OGAP_COEF += VC_2
+
+## FLS
+
+bun_fls0 = FLS(y,X, _(mu=50))
+list FLS0 = mat2list(bun_fls0.coeff, "FLS_")
+
+OGAP_COEF += FLS_2
+
+bun_fls1 = FLS(y,X, _(mu=50, metric=1))
+list FLS1 = mat2list(bun_fls1.coeff, "FLSN_")
+
+OGAP_COEF += FLSN_2
+
+plot OGAP_COEF
+    options single-yaxis with-lines time-series 
+#    literal set yrange [-5:3]
+end plot --output=display
+
+corr OGAP_COEF --plot=display

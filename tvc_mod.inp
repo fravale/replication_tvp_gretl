@@ -1,0 +1,377 @@
+# hansl code from package TVC 1.2 (2022-08-22)
+
+# private functions
+
+function scalar Crit (matrix *g "variance ratios",
+                      const matrix X "observations",
+                      const matrix XX "matrix X'X",
+                      const matrix y "vector of dependent variable",
+                      const matrix Xy "right-hand side of normal equation",
+                      const matrix P "difference matrix",
+                      const scalar T "number of observations",
+                      const scalar n "number of regressors",
+                      const bool like "likelihood")
+    matrix M =XX
+    matrix G=zeros(n,n)
+    G[diag]= 1 ./ g
+    G=I(T-1)**G
+    matrix M += qform(P',G)
+    matrix a=M \ Xy
+    matrix u=y-X*a
+    matrix v=P*a
+
+    if like
+        M = qform(P,M)
+    endif
+    scalar crit = -ldet(M)-(T-1)*sum(log(g))-(T-n*!like)*log(u'u+qform(v',G))
+#     if $version >= 20221
+#         printf "Variance ratios: "
+#         loop i=1..n
+#             printf "%10g ",g[i]
+#         endloop
+#         printf "           \r"
+#         flush
+#     endif
+    return crit
+end function
+
+function void TVCplot (series coeff "coefficient",
+                       series stderr "standard error",
+                       string label[null] "label",
+                       string lwidth[null] "linewidth",
+                       string lcolor[null] "linecolor",
+                       string bcolor[null] "bandcolor",
+                       string bwidth[null] "bandwidth",
+                       string intens[null] "intensity ⋲ [.0, 1.]")
+    if !exists(label)
+        string label=varname(coeff)
+    endif
+    if !exists(lwidth)
+        string lwidth = "3"
+    endif
+    if !exists(lcolor)
+        string lcolor = "0X32a852"
+    else
+        lcolor = "0X" ~lcolor
+    endif
+    if !exists(bcolor)
+        string bcolor = lcolor
+    else
+        bcolor = "0X" ~bcolor
+    endif
+    if !exists(bwidth)
+        string bwidth = "1.96"
+    endif
+    scalar bw =atof(bwidth)
+    if !exists(intens)
+        string intens="0.1"
+    endif
+    plot coeff
+        literal set linetype 1 lw "@lwidth"
+        literal set linetype 1 lc rgb "@lcolor"
+        literal set style fill transparent solid @intens noborder
+
+        literal set border 4095
+        literal set ylabel "@label"
+        options band=coeff,stderr,bw band-style=fill,@bcolor
+
+        options time-series with-lines
+        options --single-yaxis
+    end plot --output=display
+end function
+
+function matrix vector2matrix (matrix a,
+                               list L,
+                               string prefix)
+    scalar n = nelem(L)-1
+    scalar T = rows(a)/n
+    matrix A= zeros(T,n)
+    loop i=1..(T)
+        loop for  (j=n-1;j>=0;j+=-1)
+            A[i,n-j] = a[n*i-j]
+        endloop
+    endloop
+    return A
+end function
+
+function matrix makeX (const matrix x "regressor matrix",
+                       const scalar T "number of obs")
+    matrix X = {}
+    loop i=1..T
+        X=diagcat(X,x[i,])
+    endloop
+    return X
+end function
+
+function matrix makeP (const scalar T "number of observations",
+                       const scalar n "number of regressors")
+    matrix p=zeros(T-1,T)
+    loop i=1..(T-1)
+        p[i,i]=-1
+        p[i,i+1]=1
+    endloop
+    matrix P = p**I(n)
+    return P
+end function
+
+function matrix makeBounds (matrix *g,
+                            const scalar n)
+    if rows(g)!=n
+
+        printf "number of initial variance ratios must be equal to the number"
+        printf "\nof regressors. Please correct.\n\n"
+        funcerr
+    endif
+
+    matrix bounds = {}
+    loop i=1..n
+        if g[i,1]>0
+            bounds |={i,0,$huge}
+        elif g[i,1] ==0
+            bounds |={i,1e-7,1e-7}
+            g[i,1]=1e-7
+        elif g[i,1]<0
+            bounds |={i,-g[i,1],-g[i,1]}
+            g[i,1]=-g[i,1]
+        endif
+    endloop
+    return bounds
+end function
+
+function matrix str2vec (string s)
+    strings se=strsplit(s," ")
+    matrix g={}
+    loop i=1..nelem(se)
+        if !(atof(se[i])^2 >= 0 )
+            funcerr "Some variance ratio is not a number. Please correct."
+        endif
+        g = g ~ atof(se[i])
+    endloop
+    return g
+end function
+
+function matrix makeW (const matrix x "regressor matrix",
+                       const matrix X "big regressor matrix",
+                       const matrix P "lag matrix",
+                       const matrix g "variance ratios",
+                       const scalar s "variance")
+    scalar T=rows(x)
+    matrix G=zeros(n,n)
+    G[diag]= g
+    G=I(T-1)**G
+    matrix W=X*P'*inv(P*P')
+    W=s*(qform(W,G)+I(T))
+    return W
+end function
+
+function scalar LogLike (const matrix x "regressor matrix",
+                         const matrix y "dependent variable",
+                         const matrix X "big regressor matrix",
+                         const matrix P "lag matrix",
+                         const matrix g "variance ratios",
+                         const matrix ava "average coefficients",
+                         const scalar s "variance")
+    scalar T=rows(x)
+    scalar n=cols(x)
+    matrix G=zeros(n,n)
+    G[diag]= g
+    G=I(T-1)**G
+    matrix W=X*P'*inv(P*P')
+    W=s*(qform(W,G)+I(T))
+    scalar LL=-(1/2)*(T*(log(2)+log($pi))+ldet(W))
+    LL += -(1/2)*(y-x*ava)'*inv(W)*(y-x*ava)
+    return LL
+end function
+
+# public functions
+
+function list TVC (list L "dependent variable first, then regressors",
+                   string VR[null] "vector of variance ratios",
+                   bool plt[0] "plot result",
+                   bool like[0] "likelihood instead of moments estimation")
+    set echo off
+    set messages off
+    if sum(missing(L))
+        printf "\nSome observations have missing values. \nPlease correct.\n\n"
+        funcerr
+    endif
+    if nelem(L)<2
+        printf "\nYou need a list of at least two series.\nPlease correct.\n\n"
+        funcerr
+    endif
+
+    matrix y	  = {L[1]}
+    matrix x = (nelem(L)==2 ? {L[2]} : {L[2:]})
+    scalar T      = rows(x)
+    scalar n      = cols(x)
+    if !exists(VR)
+        matrix g = ones(n)
+    else
+        VR=strstrip(VR)
+        matrix g = str2vec(VR)'
+    endif
+    if rows(g)!=n
+        printf "\nThe number of variance ratios must equal the number of regressors.\nPlease correct.\n\n"
+        funcerr
+    endif
+    matrix g0	  = g
+
+    matrix X      = makeX(x,T)
+    matrix XX     = X'X
+    matrix Xy     = X'y
+    matrix P      = makeP(T,n)
+    matrix bounds = makeBounds(&g,n)
+    #printf "\n"
+
+    set max_verbose off
+    scalar C = BFGScmax(&g, bounds, Crit(&g,X,XX,y,Xy,P,T,n,like))
+    if $version >= 20221
+        printf "\r"
+    endif
+    flush
+    strings names = varnames(L)
+    matrix M =XX
+    matrix G=zeros(n,n)
+    G[diag]= 1 ./ g
+    G=I(T-1)**G
+    matrix M += qform(P',G)
+    matrix iM = inv(M)
+    matrix a=iM*Xy
+    matrix u=y-X*a
+    matrix v=P*a
+    scalar Q=(u'u+qform(v',G))
+    scalar s=Q/(T-n)
+    matrix b =diag(iM)
+    b= s*b
+    matrix b=sqrt(b)
+    #string covariance=strsub($pkgdir, sprintf("\\"), "/")
+    #covariance ~= "/TVCcovariance.csv"
+    #mwrite(s*iM, covariance)
+
+    if like
+        printf "\n\n\tYou have chosen maximum likelihood estimation.\n"
+        printf "\tThis is not recommended because it may lead to\n"
+        printf "\tsevere errors in shorter time series.\n\n"
+    endif
+#     printf "\n\nResults of Time-Varying Coefficients Estimation"
+#     printf   "\n===============================================\n"
+#     printf   "\nDependent variable: %s\nRegressors: ",names[1]
+#     loop i=2..(n+1)
+#         printf "%s ",names[i]
+#     endloop
+    scalar width=20
+    scalar width1=30
+    scalar width2=20
+    scalar precision=4
+#     printf "\n\n%*svariances",width1-9," "
+#     printf "%*sinitial",width2-7," "
+#     printf "%*sfiltered with\n",width2-13," "
+#     printf "%*svariance ratios",width1+width2-15," "
+#     printf "%*svariance ratios",width2-15," "
+#     printf "\nequation%*.*g",width1-8,precision,s
+    loop i=1..n
+        width=width1-strlen(names[i+1])-6
+#         printf "\ncoeff_%s",names[i+1]
+#         printf "%*.*g",width,precision,g[i]*s
+#         printf "%*.*g",width2,precision,g0[i]
+#         printf "%*.*g",width2,precision,g[i]
+    endloop
+    #printf "\n"
+    matrix coeffs		= vector2matrix(a, L,"coeff_")
+    matrix stderrs		= vector2matrix(b, L,"stderr_")
+    matrix ava=ones(T)
+    ava=(1/T)*(coeffs'*ava)
+    #printf"\naverage coefficients\n"
+    loop i=2..(n+1)
+        width=20-strlen(names[i])
+        #printf "%s%*s%10.4f\n",names[i],width," ",ava[i-1]
+    endloop
+    #printf "\n"
+    if (!(g0>zeros(n)))
+        loop i=1..n
+            if g0[i]==0
+                #printf "\nCoefficient for %s is treated as time-invariant", names[i+1]
+            elif g0[i]<0
+                #printf "\nVariance ratio for %s is fixed as %g", names[i+1],abs(g0[i])
+            endif
+        endloop
+        #printf "\n"
+    endif
+    scalar nparams=1
+    if (!(min(g0)<0))
+        loop i=1..n
+            if g0[i]>0
+                nparams +=2
+            elif g0[i]==0
+                nparams +=1
+            endif
+        endloop
+    endif
+#     printf "Number of observations: %g\nNumber of regressors: %g\n",T,n
+#     if (!(min(g0)<0))
+#         printf "Number of estimated parameters: %g\n",nparams
+#     endif
+#     if like
+#         printf "Estimation method: maximum likelihood estimator\n"
+#     else
+#         printf "Estimation method: moments estimator\n"
+#     endif
+    scalar LL = LogLike(x,y,X,P,g,ava,s)
+#     printf "Log likelihood: %g",LL
+#     printf " (presupposes Gaussian disturbances throughout.)\n"
+    #printf "\nCovariance matrix written to \n%s.\n\n", covariance
+    matrix paired = zeros(T,2*n)
+    loop i=1..n
+        paired[,2*i-1]	= coeffs[,i]
+        paired[,2*i]   	= stderrs[,i]
+    endloop
+    strings names=varnames(L)
+    string vars=""
+    loop i=2..(n+1)
+        vars +="coeff_"
+        vars +=names[i]
+        vars += " "
+        vars +="stderr_"
+        vars +=names[i]
+        vars +=" "
+    endloop
+    cnameset(paired,vars)
+    list TVCresult= paired
+    if plt
+        TVClistplot(TVCresult)
+    endif
+    return TVCresult
+end function
+
+function void TVClistplot (list P "list of time series",
+                           string lwidth[null] "linewidth",
+                           string lcolor[null] "linecolor (Hex)",
+      string bcolor[null] "bandcolor (Hex)",
+      string bwidth[null] "bandwidth",
+      string intens[null] "intensity ⋲ [.0, 1.] ")
+    string defaultlinewidth = "3"
+    string defaultcolor = "007000"
+    string defaultintensity = ".1"
+    string defaultbandwidth = "1.96"
+
+    if !exists(lwidth)
+        string lwidth = defaultlinewidth
+    endif
+    if !exists(lcolor)
+        string lcolor = defaultcolor
+    endif
+    if !exists(bcolor)
+        string bcolor = lcolor
+    endif
+    if !exists(bwidth)
+        string bwidth = defaultbandwidth
+    endif
+    if !exists(intens)
+        string intens=defaultintensity
+    endif
+    scalar ncoeffs = nelem(P)
+    ncoeffs = ncoeffs / 2
+    loop i=1..ncoeffs
+        TVCplot(P[2*i-1],P[2*i],varname(P[2*i-1]),lwidth,lcolor,bcolor,bwidth,intens)
+    endloop
+end function
