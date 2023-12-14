@@ -1,7 +1,5 @@
 # replication_tvp_gretl
 
-IN PROGRESS...
-
 ***************************************************************
 
 Replication package:
@@ -11,9 +9,11 @@ approaches"
 
 by Riccardo "Jack" Lucchetti and Francesco Valentini
 
+Email: f.valentini@staff.univpm.it
+
 ***************************************************************
 
-Software requirements: gretl 2023b or above.
+Software requirements: gretl 2023c or above.
 
 Additional gretl packages:
 
@@ -44,3 +44,9 @@ Scripts for replication:
 - 6_application_static.inp --> TODO
 
 ***************************************************************
+
+Other files:
+res_* : stores simulation results
+times_haavelmo: stored CPU times results
+
+
