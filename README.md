@@ -39,9 +39,9 @@ Scripts for replication:
 - 1_simple.inp --> replicates results in Section 3.1;
 - 2_mc_tvp.inp --> replicates results in Table 2;
 - 3_cpu_time.inp --> replicates results in Table 4 (up to hardware!)
-- 4_application.inp --> replicates results in Section 4;
+- 4_application.inp --> replicates ECM results in Section 4;
 - 5_mc_tvp_rob.inp --> replicates results in Table 3;
-- 6_application_static.inp --> TODO
+- 6_application_static.inp --> replicates static model in Section 4.
 
 ***************************************************************
 
