@@ -46,7 +46,9 @@ Scripts for replication:
 ***************************************************************
 
 Other files:
-res_* : stores simulation results
-times_haavelmo: stored CPU times results
+
+- res_* : stores simulation results
+- times_haavelmo: stored CPU times results
+
 
 
